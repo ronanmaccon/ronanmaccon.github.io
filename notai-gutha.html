@@ -265,6 +265,7 @@ $("newNoteBtn").onclick = ()=>{
   const n = { id: Date.now().toString(36)+Math.random().toString(36).slice(2,6),
               text:"", created:Date.now(), updated:Date.now() };
   notes.push(n); saveNotes(); openNote(n.id);
+  startDictation();          // + opens the note already listening
 };
 $("backBtn").onclick = backToList;
 $("deleteBtn").onclick = ()=>{
@@ -421,16 +422,22 @@ function flushChunk(){
 }
 
 async function startDictation(){
+  if(recording) return;
+  // the AudioContext must be built inside the tap that triggered this,
+  // otherwise iOS treats it as un-gestured and leaves it suspended
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if(!audioCtx || audioCtx.state === "closed") audioCtx = new AC();
+  if(audioCtx.state === "suspended") audioCtx.resume();
   try{
     stream = await navigator.mediaDevices.getUserMedia({audio:{
       echoCancellation:true, noiseSuppression:true
     }});
   }catch(e){
     setStatus("Ní bhfuair an aip cead micreafóin. Ceadaigh é i Socruithe &gt; Safari.", true);
+    try{ if(audioCtx) audioCtx.close(); }catch(err){}
+    audioCtx = null;
     return;
   }
-  const AC = window.AudioContext || window.webkitAudioContext;
-  audioCtx = new AC();
   await audioCtx.resume();
   srcRate = audioCtx.sampleRate;
   sourceNode = audioCtx.createMediaStreamSource(stream);
