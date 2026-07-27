@@ -186,11 +186,13 @@
 "use strict";
 
 /* =========================================================
-   ABAIR / ÉIST recognition endpoint (as used by abair.ie)
-   POST JSON: { recogniseBlob: <base64 WAV, no data: prefix>,
-                developer: true, method: "online2bin" }
+   ABAIR recognition endpoint (v3-5, as used by abair.ie)
+   POST multipart/form-data:
+     file      = audio blob (server runs ffmpeg, WAV is fine)
+     captpunct = "true"  -> capitalisation + punctuation
+   Response: { "text": "...", "captpunct_applied": true }
    ========================================================= */
-const ASR_URL = "https://phoneticsrv3.lcs.tcd.ie/asr_api/recognise";
+const ASR_URL = "https://recognition.abair.ie/v3-5/transcribe";
 const MAX_CHUNK_SECONDS = 12;      // send before this length is reached
 const SILENCE_HOLD_MS   = 1300;    // send after this much quiet
 const RMS_SPEECH        = 0.015;   // level considered "speech"
@@ -334,35 +336,22 @@ function encodeWav(f32, rate){
   }
   return ab;
 }
-function abToBase64(ab){
-  const bytes=new Uint8Array(ab); let bin="";
-  const CH=0x8000;
-  for(let i=0;i<bytes.length;i+=CH){
-    bin += String.fromCharCode.apply(null, bytes.subarray(i,i+CH));
-  }
-  return btoa(bin);
-}
-
 /* --------- pull transcription text out of the response --------- */
 function extractText(data){
   if(!data) return "";
-  let t = data.transcriptions !== undefined ? data.transcriptions : data;
+  if(typeof data === "string") return data.trim();
+  for(const k of ["text","transcript","transcription","utterance"]){
+    if(typeof data[k] === "string") return data[k].trim();
+  }
+  let t = data.transcriptions;
   if(typeof t === "string") return t.trim();
-  if(Array.isArray(t)){
-    if(!t.length) return "";
+  if(Array.isArray(t) && t.length){
     const first = t[0];
     if(typeof first === "string") return first.trim();
-    if(typeof first === "object" && first){
-      for(const k of ["utterance","transcript","transcription","text","hypothesis"]){
+    if(first && typeof first === "object"){
+      for(const k of ["text","utterance","transcript","transcription"]){
         if(typeof first[k] === "string") return first[k].trim();
       }
-      const vals = Object.values(first).filter(v=>typeof v==="string");
-      if(vals.length) return vals[0].trim();
-    }
-  }
-  if(typeof t === "object"){
-    for(const k of ["utterance","transcript","transcription","text","hypothesis"]){
-      if(typeof t[k] === "string") return t[k].trim();
     }
   }
   return "";
@@ -384,24 +373,28 @@ async function sendChunk(f32, rate){
   for(let i=0;i<mono16k.length;i+=50) energy=Math.max(energy, Math.abs(mono16k[i]));
   if(energy < RMS_SPEECH || mono16k.length < TARGET_RATE*0.4) return;
 
-  const b64 = abToBase64(encodeWav(mono16k, TARGET_RATE));
+  const wavBlob = new Blob([encodeWav(mono16k, TARGET_RATE)], {type:"audio/wav"});
+  const fd = new FormData();
+  fd.append("file", wavBlob, "recording.wav");
+  fd.append("captpunct", "true");
+
   sending++;
   updateBusy();
   try{
     const ctrl = new AbortController();
-    const to = setTimeout(()=>ctrl.abort(), 20000);
-    const res = await fetch(ASR_URL,{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ recogniseBlob: b64, developer: true, method: "online2bin" }),
-      signal: ctrl.signal
-    });
+    const to = setTimeout(()=>ctrl.abort(), 30000);
+    const res = await fetch(ASR_URL, { method:"POST", body: fd, signal: ctrl.signal });
     clearTimeout(to);
-    if(!res.ok) throw new Error("HTTP "+res.status);
+    if(!res.ok) throw new Error("freagra " + res.status + " ón bhfreastalaí");
     const data = await res.json();
     appendToNote(extractText(data));
   }catch(e){
-    setStatus("Theip ar an aithint cainte. Seiceáil an nasc idirlín.", true);
+    const why = e.name === "AbortError"
+      ? "Bhí an freastalaí rómhall."
+      : (e.message && e.message.indexOf("freagra") === 0
+          ? "Theip ar Abair: " + e.message + "."
+          : "Níorbh fhéidir teagmháil le seirbhís Abair.");
+    setStatus(why + " Bain triail eile as.", true);
   }finally{
     sending--; updateBusy();
   }
